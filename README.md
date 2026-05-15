@@ -12,3 +12,4 @@ insights into their builds and automated distribution workflows.
 * [ ] **Artifact Analysis:** Automatic tracking of binary size and build timings.
 * [ ] **Post-processing:** Integrated binary stripping and UPX compression.
 * [ ] **CI/CD Ready:** Exportable build reports in machine-readable formats.
+* [ ] **Prebuild and after build Tasks:** Execute a tasks after builder and prebuild
