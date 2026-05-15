@@ -18,7 +18,7 @@ insights into their builds and automated distribution workflows.
 * [ ] **Build Reports:** Exportable timing and size analysis in machine-readable formats.
 
 ### Installation
-Download a latest release
+[Download a latest release](https://github.com/Vladprohxjx/Forge/releases/latest)
 
 ### Configuration (Forge.toml)
 Create a Forge.toml file in your workspace root:
