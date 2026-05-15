@@ -1,0 +1,10 @@
+[project]
+name = "forge"
+
+[workspace]
+members = ["forge"]
+
+[build]
+strip = true
+threads = 4
+log = true
