@@ -11,9 +11,10 @@ use cargo_toml::Manifest;
 use sha2::{Sha256, Digest};
 use walkdir::WalkDir;
 use std::io::{Read, Write};
+use std::collections::HashMap;
 
 #[derive(Parser)]
-#[command(name = "forge", version = "0.1.1")]
+#[command(name = "forge", version = "0.1.2")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -34,6 +35,8 @@ struct ForgeConfig {
     #[serde(default)]
     build: BuildSettings,
     #[serde(default)]
+    env: HashMap<String, String>,
+    #[serde(default)]
     prebuild: HookConfig,
     #[serde(default)]
     afterbuild: HookConfig,
@@ -53,6 +56,10 @@ struct BuildSettings {
     threads: usize,
     #[serde(default = "default_log")]
     log: bool,
+    pub target: Option<String>,
+    pub features: Option<Vec<String>>,
+    #[serde(default)]
+    pub all_features: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -66,7 +73,10 @@ impl Default for BuildSettings {
         Self { 
             strip: default_strip(), 
             threads: default_threads(), 
-            log: default_log() 
+            log: default_log(),
+            target: None,
+            features: None,
+            all_features: false,
         }
     }
 }
@@ -94,36 +104,37 @@ fn calculate_project_hash(path: &Path) -> anyhow::Result<String> {
     Ok(hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect())
 }
 
-async fn run_hook(commands: &[String], cwd: &Path) -> anyhow::Result<()> {
+async fn run_hook(commands: &[String], cwd: &Path, envs: &HashMap<String, String>, forge_vars: HashMap<&str, String>) -> anyhow::Result<()> {
     for cmd_str in commands {
+        let mut processed_cmd = cmd_str.clone();
+        for (key, val) in &forge_vars {
+            processed_cmd = processed_cmd.replace(&format!("${}", key), val);
+        }
+
         let mut cmd = if cfg!(target_os = "windows") {
             let mut c = tokio::process::Command::new("cmd");
-            c.args(["/C", cmd_str]);
+            c.args(["/C", &processed_cmd]);
             c
         } else {
             let mut c = tokio::process::Command::new("sh");
-            c.args(["-c", cmd_str]);
+            c.args(["-c", &processed_cmd]);
             c
         };
+        
+        cmd.envs(envs);
         let status = cmd.current_dir(cwd).status().await?;
-        if !status.success() { anyhow::bail!("Hook failed: {}", cmd_str); }
+        if !status.success() { anyhow::bail!("Hook failed: {}", processed_cmd); }
     }
     Ok(())
 }
 
 async fn run_parallel_tool(name: String, path: String, tool: &'static str, pb: ProgressBar) -> anyhow::Result<()> {
     pb.set_message(format!("Running {} on {}", tool, name));
-    
     let mut cmd = tokio::process::Command::new("cargo");
     cmd.arg(tool).current_dir(&path);
-    
-    if tool == "clippy" {
-        cmd.args(["--", "-D", "warnings"]);
-    }
-
+    if tool == "clippy" { cmd.args(["--", "-D", "warnings"]); }
     let output = cmd.output().await?;
     pb.finish_and_clear();
-
     if output.status.success() {
         println!("{} {}: {}", "OK".green().bold(), tool.to_uppercase(), name);
     } else {
@@ -146,12 +157,24 @@ async fn run_build(name: String, member_path: String, is_release: bool, config: 
         return Ok(())
     }
 
+    let profile = if is_release { "release" } else { "debug" };
+    let mut forge_vars = HashMap::new();
+    forge_vars.insert("FORGE_PROJECT", name.clone());
+    forge_vars.insert("FORGE_PROFILE", profile.to_string());
+    forge_vars.insert("FORGE_PATH", member_path.clone());
+
     pb.set_message(format!("Building {}", name));
-    run_hook(&config.prebuild.commands, &path_obj).await?;
+    run_hook(&config.prebuild.commands, &path_obj, &config.env, forge_vars.clone()).await?;
 
     let mut cmd = tokio::process::Command::new("cargo");
     cmd.arg("build").arg("--manifest-path").arg(path_obj.join("Cargo.toml"));
+    
     if is_release { cmd.arg("--release"); }
+    if let Some(target) = &config.build.target { cmd.arg("--target").arg(target); }
+    if config.build.all_features { cmd.arg("--all-features"); }
+    if let Some(features) = &config.build.features {
+        cmd.arg("--features").arg(features.join(","));
+    }
 
     let output = cmd.output().await?;
 
@@ -165,7 +188,6 @@ async fn run_build(name: String, member_path: String, is_release: bool, config: 
 
     if output.status.success() {
         if config.build.strip && name != "forge" {
-            let profile = if is_release { "release" } else { "debug" };
             let exe = if cfg!(target_os = "windows") { format!("{}.exe", name) } else { name.clone() };
             let bin_path = if member_path == "." { 
                 Path::new("target").join(profile).join(&exe)
@@ -175,7 +197,7 @@ async fn run_build(name: String, member_path: String, is_release: bool, config: 
             if bin_path.exists() { let _ = std::process::Command::new("strip").arg(&bin_path).status(); }
         }
         
-        run_hook(&config.afterbuild.commands, &path_obj).await?;
+        run_hook(&config.afterbuild.commands, &path_obj, &config.env, forge_vars).await?;
         fs::write(hash_file, current_hash)?;
         pb.finish_and_clear();
         println!("{} OK: {}", "FINISHED".green().bold(), name);
@@ -190,7 +212,7 @@ async fn run_build(name: String, member_path: String, is_release: bool, config: 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config_raw = fs::read_to_string("forge.toml").unwrap_or_else(|_| fs::read_to_string("Forge.toml").unwrap_or_default());
+    let config_raw = fs::read_to_string("forge.toml").or_else(|_| fs::read_to_string("Forge.toml")).unwrap_or_default();
     let config: Arc<ForgeConfig> = Arc::new(toml::from_str(&config_raw).unwrap_or_default());
     
     if let Ok(repo) = Repository::open(".") {
@@ -289,7 +311,6 @@ async fn main() -> anyhow::Result<()> {
             println!("{} Workspace cleaned.", "OK".green().bold());
         }
     }
-    
     main_pb.finish_and_clear();
     Ok(())
 }

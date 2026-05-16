@@ -16,7 +16,7 @@ insights into their builds and automated distribution workflows.
 * [x] **Unified CLI:** Built-in commands for `fmt`, `clippy` (lint), and `clean`.
 * [x] **Build Tasks:** Exportable timing and size analysis in machine-readable formats.
 * [ ] **UPX Compression:** Automated compression for further binary size reduction.
-* [ ] **Build Reports:** Exportable timing and size analysis in machine-readable formats.
+* [ ] Self-Update: Built-in command to update Forge to the latest version.
 
 ### Installation
 [Download a latest release](https://github.com/Vladprohxjx/Forge/releases/latest)
@@ -37,6 +37,39 @@ commands = ["echo 'Forge build started!'"]
 threads = 4      # Number of parallel jobs (default: 2)
 strip = true     # Strip symbols from binaries
 log = true       # Save stdout/stderr to .logs/project.log
+```
+
+### Environment Variables
+Forge automatically injects context into your hooks. You can use these variables in any `prebuild` or `afterbuild` command:
+
+- `$FORGE_PROJECT`: Name of the current package.
+- `$FORGE_PROFILE`: Build profile (`debug` or `release`).
+- `$FORGE_PATH`: Relative path to the project directory.
+
+You can also define custom variables in the `[env]` section:
+```toml
+[env]
+DEST_DIR = "./dist"
+API_KEY = "secret_value"
+
+[afterbuild]
+commands = [
+    "mkdir -p $DEST_DIR",
+    "cp ./target/$FORGE_PROFILE/$FORGE_PROJECT $DEST_DIR/"
+]
+```
+
+### Compilation Settings
+The [build] section supports direct Cargo flags for cross-compilation and feature management:
+```toml
+[build]
+# Target triple (e.g., x86_64-unknown-linux-gnu)
+target = "x86_64-pc-windows-msvc"
+
+# Feature management
+all_features = false
+features = ["extra-logs", "serde_json"]
+
 ```
 
 ### Usage
