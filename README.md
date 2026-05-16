@@ -27,6 +27,12 @@ Create a Forge.toml file in your workspace root:
 [workspace]
 members = ["apps/api", "libs/core"]
 
+[afterbuild]
+commands = ["echo 'Forge build finished!'"]
+
+[prebuild]
+commands = ["echo 'Forge build started!'"]
+
 [build]
 threads = 4      # Number of parallel jobs (default: 2)
 strip = true     # Strip symbols from binaries
