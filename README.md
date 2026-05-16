@@ -16,7 +16,7 @@ insights into their builds and automated distribution workflows.
 * [x] **Unified CLI:** Built-in commands for `fmt`, `clippy` (lint), and `clean`.
 * [x] **Build Tasks:** Exportable timing and size analysis in machine-readable formats.
 * [ ] **UPX Compression:** Automated compression for further binary size reduction.
-* [ ] Self-Update: Built-in command to update Forge to the latest version.
+* [ ] **Self-Update:** Built-in command to update Forge to the latest version.
 
 ### Installation
 [Download a latest release](https://github.com/Vladprohxjx/Forge/releases/latest)

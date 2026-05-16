@@ -14,7 +14,7 @@ use std::io::{Read, Write};
 use std::collections::HashMap;
 
 #[derive(Parser)]
-#[command(name = "forge", version = "0.1.2")]
+#[command(name = "forge", version = "1.0.0")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
