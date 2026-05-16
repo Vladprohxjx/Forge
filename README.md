@@ -14,6 +14,7 @@ insights into their builds and automated distribution workflows.
 * [x] **Post-processing:** Integrated binary stripping for production-ready artifacts.
 * [x] **Git Integration:** Automatic detection of uncommitted changes before build.
 * [x] **Unified CLI:** Built-in commands for `fmt`, `clippy` (lint), and `clean`.
+* [x] **Build Tasks:** Exportable timing and size analysis in machine-readable formats.
 * [ ] **UPX Compression:** Automated compression for further binary size reduction.
 * [ ] **Build Reports:** Exportable timing and size analysis in machine-readable formats.
 
