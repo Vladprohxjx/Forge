@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 use std::io::{Read, Write};
 
 #[derive(Parser)]
-#[command(name = "forge", version = "0.1.0")]
+#[command(name = "forge", version = "0.1.1")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -25,6 +25,7 @@ enum Commands {
     Clean,
     Fmt,
     Lint,
+    Test,
 }
 
 #[derive(Deserialize, Default)]
@@ -32,6 +33,10 @@ struct ForgeConfig {
     workspace: Option<WorkspaceConfig>,
     #[serde(default)]
     build: BuildSettings,
+    #[serde(default)]
+    prebuild: HookConfig,
+    #[serde(default)]
+    afterbuild: HookConfig,
 }
 
 #[derive(Deserialize, Default)]
@@ -50,6 +55,12 @@ struct BuildSettings {
     log: bool,
 }
 
+#[derive(Deserialize, Default)]
+struct HookConfig {
+    #[serde(default)]
+    commands: Vec<String>,
+}
+
 impl Default for BuildSettings {
     fn default() -> Self {
         Self { 
@@ -66,107 +77,112 @@ fn default_log() -> bool { false }
 
 fn calculate_project_hash(path: &Path) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
-    let entries: Vec<_> = WalkDir::new(path).into_iter().filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| !e.path().to_string_lossy().contains("target"))
-        .collect();
-    
-    for entry in entries {
-        if let Ok(mut file) = fs::File::open(entry.path()) {
-            let mut buffer = [0; 8192];
-            while let Ok(n) = file.read(&mut buffer) {
-                if n == 0 { break; }
-                hasher.update(&buffer[..n]);
+    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            let p = entry.path();
+            if !p.to_string_lossy().contains("target") && !p.to_string_lossy().contains(".git") && !p.to_string_lossy().contains(".logs") {
+                if let Ok(mut file) = fs::File::open(p) {
+                    let mut buffer = [0; 8192];
+                    while let Ok(n) = file.read(&mut buffer) {
+                        if n == 0 { break; }
+                        hasher.update(&buffer[..n]);
+                    }
+                }
             }
         }
     }
-    Ok(hex::encode(hasher.finalize()))
+    Ok(hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect())
 }
 
-fn is_cache_valid(name: &str, current_hash: &str) -> bool {
-    let path = PathBuf::from("target").join(format!("{}.hash", name));
-    if let Ok(old) = fs::read_to_string(path) { return old == current_hash; }
-    false
-}
-
-fn save_cache_hash(name: &str, hash: &str) -> anyhow::Result<()> {
-    let dir = PathBuf::from("target");
-    if !dir.exists() { fs::create_dir_all(&dir)?; }
-    fs::write(dir.join(format!("{}.hash", name)), hash)?;
+async fn run_hook(commands: &[String], cwd: &Path) -> anyhow::Result<()> {
+    for cmd_str in commands {
+        let mut cmd = if cfg!(target_os = "windows") {
+            let mut c = tokio::process::Command::new("cmd");
+            c.args(["/C", cmd_str]);
+            c
+        } else {
+            let mut c = tokio::process::Command::new("sh");
+            c.args(["-c", cmd_str]);
+            c
+        };
+        let status = cmd.current_dir(cwd).status().await?;
+        if !status.success() { anyhow::bail!("Hook failed: {}", cmd_str); }
+    }
     Ok(())
 }
 
-fn write_to_log(name: &str, stdout: &[u8], stderr: &[u8]) -> anyhow::Result<()> {
-    let log_dir = Path::new(".logs");
-    if !log_dir.exists() { fs::create_dir_all(log_dir)?; }
-    let mut file = fs::File::create(log_dir.join(format!("{}.log", name)))?;
-    file.write_all(b"--- STDOUT ---\n")?;
-    file.write_all(stdout)?;
-    file.write_all(b"\n--- STDERR ---\n")?;
-    file.write_all(stderr)?;
-    Ok(())
-}
-
-async fn run_tool(name: String, path: String, tool: &str, pb: ProgressBar) -> anyhow::Result<()> {
+async fn run_parallel_tool(name: String, path: String, tool: &'static str, pb: ProgressBar) -> anyhow::Result<()> {
     pb.set_message(format!("Running {} on {}", tool, name));
-    let manifest_path = if path == "." { PathBuf::from("Cargo.toml") } else { Path::new(&path).join("Cargo.toml") };
     
     let mut cmd = tokio::process::Command::new("cargo");
-    cmd.arg(tool).arg("--manifest-path").arg(manifest_path);
-    if tool == "clippy" { cmd.arg("--").arg("-D").arg("warnings"); }
+    cmd.arg(tool).current_dir(&path);
+    
+    if tool == "clippy" {
+        cmd.args(["--", "-D", "warnings"]);
+    }
 
     let output = cmd.output().await?;
     pb.finish_and_clear();
 
     if output.status.success() {
-        println!("{} {}: {}", "Success:".green().bold(), tool, name);
+        println!("{} {}: {}", "OK".green().bold(), tool.to_uppercase(), name);
     } else {
-        println!("{} {}: {}", "Error:".red().bold(), tool, name);
+        println!("{} {}: {}", "ERROR".red().bold(), tool.to_uppercase(), name);
         eprintln!("{}", String::from_utf8_lossy(&output.stderr));
     }
     Ok(())
 }
 
-async fn run_build(name: String, member_path: String, is_release: bool, strip: bool, log: bool, pb: ProgressBar) -> anyhow::Result<()> {
-    let path_obj = Path::new(&member_path);
-    let current_hash = calculate_project_hash(path_obj)?;
+async fn run_build(name: String, member_path: String, is_release: bool, config: Arc<ForgeConfig>, pb: ProgressBar) -> anyhow::Result<()> {
+    let path_obj = PathBuf::from(&member_path);
+    let current_hash = calculate_project_hash(&path_obj)?;
+    let hash_dir = Path::new("target").join(".hashes");
+    fs::create_dir_all(&hash_dir)?;
+    let hash_file = hash_dir.join(format!("{}.hash", name));
     
-    if is_cache_valid(&name, &current_hash) {
+    if hash_file.exists() && fs::read_to_string(&hash_file).unwrap_or_default() == current_hash {
         pb.finish_and_clear();
-        println!("{} Cached: {}", "Success:".green().bold(), name);
-        return Ok(());
+        println!("{} DONE: {} is up to date", "OK".green().bold(), name);
+        return Ok(())
     }
 
     pb.set_message(format!("Building {}", name));
-    let manifest_path = if member_path == "." { PathBuf::from("Cargo.toml") } else { path_obj.join("Cargo.toml") };
-    
+    run_hook(&config.prebuild.commands, &path_obj).await?;
+
     let mut cmd = tokio::process::Command::new("cargo");
-    cmd.arg("build").arg("--manifest-path").arg(manifest_path);
+    cmd.arg("build").arg("--manifest-path").arg(path_obj.join("Cargo.toml"));
     if is_release { cmd.arg("--release"); }
 
     let output = cmd.output().await?;
 
-    if log {
-        let _ = write_to_log(&name, &output.stdout, &output.stderr);
+    if config.build.log {
+        let log_dir = Path::new(".logs");
+        fs::create_dir_all(log_dir)?;
+        let mut file = fs::File::create(log_dir.join(format!("{}.log", name)))?;
+        file.write_all(&output.stdout)?;
+        file.write_all(&output.stderr)?;
     }
 
     if output.status.success() {
-        let profile = if is_release { "release" } else { "debug" };
-        let bin_path = PathBuf::from("target").join(profile).join(&name);
-        if bin_path.exists() && strip { 
-            let _ = std::process::Command::new("strip").arg(&bin_path).status(); 
+        if config.build.strip && name != "forge" {
+            let profile = if is_release { "release" } else { "debug" };
+            let exe = if cfg!(target_os = "windows") { format!("{}.exe", name) } else { name.clone() };
+            let bin_path = if member_path == "." { 
+                Path::new("target").join(profile).join(&exe)
+            } else {
+                path_obj.join("target").join(profile).join(&exe)
+            };
+            if bin_path.exists() { let _ = std::process::Command::new("strip").arg(&bin_path).status(); }
         }
-        save_cache_hash(&name, &current_hash)?;
+        
+        run_hook(&config.afterbuild.commands, &path_obj).await?;
+        fs::write(hash_file, current_hash)?;
         pb.finish_and_clear();
-        println!("{} Finished: {}", "Success:".green().bold(), name);
+        println!("{} OK: {}", "FINISHED".green().bold(), name);
     } else {
         pb.finish_and_clear();
-        println!("{} Failed: {}", "Error:".red().bold(), name);
-        if !log {
-            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
-        } else {
-            println!("Check logs in .logs/{}.log", name);
-        }
+        println!("{} ERROR: {}", "FAILED".red().bold(), name);
+        if !config.build.log { eprintln!("{}", String::from_utf8_lossy(&output.stderr)); }
     }
     Ok(())
 }
@@ -174,81 +190,106 @@ async fn run_build(name: String, member_path: String, is_release: bool, strip: b
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config: ForgeConfig = toml::from_str(&fs::read_to_string("Forge.toml").unwrap_or_default()).unwrap_or_default();
+    let config_raw = fs::read_to_string("forge.toml").unwrap_or_else(|_| fs::read_to_string("Forge.toml").unwrap_or_default());
+    let config: Arc<ForgeConfig> = Arc::new(toml::from_str(&config_raw).unwrap_or_default());
     
     if let Ok(repo) = Repository::open(".") {
         let mut opts = git2::StatusOptions::new();
         if let Ok(statuses) = repo.statuses(Some(&mut opts)) {
-            if !statuses.is_empty() { 
-                println!("{} Uncommitted changes detected.\n", "WARN:".yellow().bold()); 
-            }
+            if !statuses.is_empty() { println!("{} Uncommitted changes detected.\n", "WARN:".yellow().bold()); }
         }
     }
 
     let mut projects = Vec::new();
-    if let Some(ws) = config.workspace {
-        for m in ws.members {
-            let p = PathBuf::from(&m).join("Cargo.toml");
+    if let Some(ws) = &config.workspace {
+        for m in &ws.members {
+            let p = PathBuf::from(m).join("Cargo.toml");
             if p.exists() {
                 let manifest = Manifest::from_slice(&fs::read(p)?)?;
-                projects.push((manifest.package.unwrap().name, m));
+                projects.push((manifest.package.unwrap().name, m.clone()));
             }
         }
-    }
-    if projects.is_empty() && Path::new("Cargo.toml").exists() {
+    } else if Path::new("Cargo.toml").exists() {
         let manifest = Manifest::from_slice(&fs::read("Cargo.toml")?)?;
         projects.push((manifest.package.unwrap().name, ".".to_string()));
     }
 
+    let sem = Arc::new(Semaphore::new(config.build.threads));
+    let mp = MultiProgress::new();
+    let main_pb = mp.add(ProgressBar::new(projects.len() as u64));
+    main_pb.set_style(ProgressStyle::default_bar()
+        .template("[{bar:40.blue}] {pos}/{len} projects")?
+        .progress_chars("=>-"));
+
     match cli.command {
         Commands::Build { release } => {
-            let mp = MultiProgress::new();
-            let main_pb = mp.add(ProgressBar::new(projects.len() as u64));
-            main_pb.set_style(ProgressStyle::default_bar()
-                .template("[{bar:40.cyan/blue}] {pos}/{len} projects")?
-                .progress_chars("#>-"));
-            
-            let sem = Arc::new(Semaphore::new(config.build.threads));
             let mut tasks = vec![];
-            
             for (name, path) in projects {
                 let s = Arc::clone(&sem);
                 let pb = mp.insert_before(&main_pb, ProgressBar::new_spinner());
                 let m_pb = main_pb.clone();
-                let strip = config.build.strip;
-                let log = config.build.log;
-                
+                let cfg_c = Arc::clone(&config);
                 tasks.push(tokio::spawn(async move {
                     let _p = s.acquire().await.unwrap();
-                    let res = run_build(name, path, release, strip, log, pb).await;
+                    let res = run_build(name, path, release, cfg_c, pb).await;
                     m_pb.inc(1);
                     res
                 }));
             }
             for t in tasks { let _ = t.await; }
-            main_pb.finish_and_clear();
         },
         Commands::Fmt => {
+            let mut tasks = vec![];
             for (name, path) in projects {
-                let pb = ProgressBar::new_spinner();
-                run_tool(name, path, "fmt", pb).await?;
+                let s = Arc::clone(&sem);
+                let pb = mp.insert_before(&main_pb, ProgressBar::new_spinner());
+                let m_pb = main_pb.clone();
+                tasks.push(tokio::spawn(async move {
+                    let _p = s.acquire().await.unwrap();
+                    let res = run_parallel_tool(name, path, "fmt", pb).await;
+                    m_pb.inc(1);
+                    res
+                }));
             }
+            for t in tasks { let _ = t.await; }
         },
         Commands::Lint => {
+            let mut tasks = vec![];
             for (name, path) in projects {
-                let pb = ProgressBar::new_spinner();
-                run_tool(name, path, "clippy", pb).await?;
+                let s = Arc::clone(&sem);
+                let pb = mp.insert_before(&main_pb, ProgressBar::new_spinner());
+                let m_pb = main_pb.clone();
+                tasks.push(tokio::spawn(async move {
+                    let _p = s.acquire().await.unwrap();
+                    let res = run_parallel_tool(name, path, "clippy", pb).await;
+                    m_pb.inc(1);
+                    res
+                }));
             }
+            for t in tasks { let _ = t.await; }
+        },
+        Commands::Test => {
+            let mut tasks = vec![];
+            for (name, path) in projects {
+                let s = Arc::clone(&sem);
+                let pb = mp.insert_before(&main_pb, ProgressBar::new_spinner());
+                let m_pb = main_pb.clone();
+                tasks.push(tokio::spawn(async move {
+                    let _p = s.acquire().await.unwrap();
+                    let res = run_parallel_tool(name, path, "test", pb).await;
+                    m_pb.inc(1);
+                    res
+                }));
+            }
+            for t in tasks { let _ = t.await; }
         },
         Commands::Clean => {
-            if Path::new("target").exists() {
-                fs::remove_dir_all("target")?;
-            }
-            if Path::new(".logs").exists() {
-                fs::remove_dir_all(".logs")?;
-            }
-            println!("Project cleaned.");
+            main_pb.finish_and_clear();
+            for dir in ["target", ".logs"] { if Path::new(dir).exists() { fs::remove_dir_all(dir)?; } }
+            println!("{} Workspace cleaned.", "OK".green().bold());
         }
     }
+    
+    main_pb.finish_and_clear();
     Ok(())
 }
