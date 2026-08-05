@@ -128,7 +128,12 @@ fn calculate_project_hash(path: &Path) -> anyhow::Result<String> {
             }
         }
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    let hash_bytes = hasher.finalize();
+    let mut hash_string = String::with_capacity(hash_bytes.len() * 2);
+    for byte in hash_bytes.iter() {
+        hash_string.push_str(&format!("{:02x}", byte));
+    }
+    Ok(hash_string)
 }
 
 fn sanitize_command(cmd: &str) -> anyhow::Result<String> {
