@@ -1,81 +1,183 @@
 # Forge
 
-A high-performance Cargo workflow orchestrator written in Rust. 
+A high-performance Cargo workflow orchestrator written in Rust.
 
-Forge extends the standard Rust build pipeline by automating post-build 
-optimizations, binary analysis, and environment-specific tasks. It acts 
-as a transparent layer over Cargo, providing developers with deeper 
-insights into their builds and automated distribution workflows.
+Forge extends the standard Rust build pipeline by automating post-build optimizations, binary analysis, and environment-specific tasks. It acts as a transparent layer over Cargo, providing developers with deeper insights into their builds and automated distribution workflows.
 
-### Key Features 
-* [x] **Workspace Orchestration:** Parallel execution of builds across multiple members.
-* [x] **Smart Caching:** SHA-256 based file tracking to skip redundant builds.
-* [x] **Isolated Logging:** Per-project log files in `.logs/` directory to prevent terminal noise.
-* [x] **Post-processing:** Integrated binary stripping for production-ready artifacts.
-* [x] **Git Integration:** Automatic detection of uncommitted changes before build.
-* [x] **Unified CLI:** Built-in commands for `fmt`, `clippy` (lint), and `clean`.
-* [x] **Build Tasks:** Exportable timing and size analysis in machine-readable formats.
-* [ ] **UPX Compression:** Automated compression for further binary size reduction.
-* [ ] **Self-Update:** Built-in command to update Forge to the latest version.
+## Key Features
 
-### Installation
-[Download a latest release](https://github.com/Vladprohxjx/Forge/releases/latest)
+- **Workspace Orchestration:** Parallel execution of builds across multiple workspace members with configurable thread limits.
+- **Smart Caching:** SHA-256 based file tracking to skip redundant builds and save time.
+- **Isolated Logging:** Per-project log files in `.logs/` directory to prevent terminal noise.
+- **Post-processing:** Integrated binary stripping for production-ready artifacts.
+- **Git Integration:** Automatic detection of uncommitted changes before build operations.
+- **Unified CLI:** Built-in commands for `build`, `fmt`, `clippy` (lint), `test`, and `clean`.
+- **Cross-compilation Support:** Configure target triples and features directly in the config file.
+- **Hook System:** Pre-build and post-build hooks with environment variable injection.
 
-### Configuration (Forge.toml)
-Create a Forge.toml file in your workspace root:
+## Installation
+
+Download the latest release from the [releases page](https://github.com/Vladprohxjx/Forge/releases/latest).
+
+Alternatively, build from source:
+
+```bash
+git clone https://github.com/Vladprohxjx/Forge.git
+cd Forge
+cargo build --release
+```
+
+The binary will be available at `target/release/forge`.
+
+## Configuration (Forge.toml)
+
+Create a `forge.toml` or `Forge.toml` file in your workspace root:
+
 ```toml
 [workspace]
 members = ["apps/api", "libs/core"]
 
-[afterbuild]
-commands = ["echo 'Forge build finished!'"]
+[build]
+threads = 4          # Number of parallel jobs (default: 2)
+strip = true         # Strip symbols from binaries
+log = true           # Save stdout/stderr to .logs/project.log
+target = "x86_64-unknown-linux-gnu"  # Optional: cross-compilation target
+all_features = false
+features = ["serde_json", "tokio"]
 
 [prebuild]
-commands = ["echo 'Forge build started!'"]
-
-[build]
-threads = 4      # Number of parallel jobs (default: 2)
-strip = true     # Strip symbols from binaries
-log = true       # Save stdout/stderr to .logs/project.log
-```
-
-### Environment Variables
-Forge automatically injects context into your hooks. You can use these variables in any `prebuild` or `afterbuild` command:
-
-- `$FORGE_PROJECT`: Name of the current package.
-- `$FORGE_PROFILE`: Build profile (`debug` or `release`).
-- `$FORGE_PATH`: Relative path to the project directory.
-
-You can also define custom variables in the `[env]` section:
-```toml
-[env]
-DEST_DIR = "./dist"
-API_KEY = "secret_value"
+commands = [
+    "echo 'Starting build for $FORGE_PROJECT'",
+    "echo 'Profile: $FORGE_PROFILE'"
+]
 
 [afterbuild]
 commands = [
-    "mkdir -p $DEST_DIR",
-    "cp ./target/$FORGE_PROFILE/$FORGE_PROJECT $DEST_DIR/"
+    "echo 'Build completed for $FORGE_PROJECT'",
+    "cp target/$FORGE_PROFILE/$FORGE_PROJECT ./dist/"
+]
+
+[env]
+DEST_DIR = "./dist"
+BUILD_VERSION = "1.0.0"
+```
+
+## Environment Variables
+
+Forge automatically injects the following environment variables into prebuild and afterbuild hooks:
+
+| Variable | Description |
+|----------|-------------|
+| `$FORGE_PROJECT` | Name of the current package |
+| `$FORGE_PROFILE` | Build profile (`debug` or `release`) |
+| `$FORGE_PATH` | Relative path to the project directory |
+
+You can also define custom variables in the `[env]` section. These are passed to all hook commands.
+
+## Build Configuration Options
+
+The `[build]` section supports the following options:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `threads` | integer | 2 | Number of parallel build jobs |
+| `strip` | boolean | false | Strip symbols from compiled binaries |
+| `log` | boolean | false | Save build output to `.logs/` directory |
+| `target` | string | - | Target triple for cross-compilation |
+| `all_features` | boolean | false | Enable all features for all packages |
+| `features` | array | - | List of features to enable |
+
+## Commands
+
+### Build
+
+Build all workspace members with smart caching:
+
+```bash
+forge build              # Debug build
+forge build --release    # Release build
+```
+
+### Format
+
+Format all workspace members using `cargo fmt`:
+
+```bash
+forge fmt
+```
+
+### Lint
+
+Run clippy on all workspace members with strict warnings:
+
+```bash
+forge lint
+```
+
+### Test
+
+Run tests for all workspace members:
+
+```bash
+forge test
+```
+
+### Clean
+
+Remove `target/` and `.logs/` directories:
+
+```bash
+forge clean
+```
+
+## Hook System
+
+Forge supports pre-build and post-build hooks that execute custom commands:
+
+- **prebuild:** Commands executed before each project build
+- **afterbuild:** Commands executed after successful project build
+
+Hooks support variable substitution using `$VARIABLE` or `${VARIABLE}` syntax. Only alphanumeric variable names (with underscores) are allowed for security.
+
+Example:
+
+```toml
+[prebuild]
+commands = [
+    "echo 'Building $FORGE_PROJECT in $FORGE_PROFILE mode'",
+    "mkdir -p $DEST_DIR"
+]
+
+[afterbuild]
+commands = [
+    "cp target/$FORGE_PROFILE/$FORGE_PROJECT $DEST_DIR/",
+    "strip $DEST_DIR/$FORGE_PROJECT"
 ]
 ```
 
-### Compilation Settings
-The [build] section supports direct Cargo flags for cross-compilation and feature management:
-```toml
-[build]
-# Target triple (e.g., x86_64-unknown-linux-gnu)
-target = "x86_64-pc-windows-msvc"
+## Smart Caching
 
-# Feature management
-all_features = false
-features = ["extra-logs", "serde_json"]
+Forge uses SHA-256 hashing to track file changes. Only relevant source files (`.rs`, `.toml`, `.md`, `.json`, `.yaml`, `.yml`) are included in the hash calculation. Files in `target/`, `.git/`, `.logs/`, and `Cargo.lock` are automatically excluded.
 
-```
+If no changes are detected, Forge skips the build and reports the project as "up to date".
 
-### Usage
-* **Build:** forge build [--release]
-* **Format:** forge fmt
-* **Lint:** forge lint (runs clippy with -D warnings)
-* **Clean:** forge clean (removes target/ and .logs/)
-### License
+## Error Handling
+
+Forge provides detailed error messages for:
+
+- Missing or invalid `Cargo.toml` files
+- Failed build commands
+- Hook execution failures
+- File system errors
+
+When `log = true` is enabled, full build output is saved to `.logs/<project>.log` for debugging.
+
+## Security Considerations
+
+- Hook commands are validated to prevent injection attacks
+- Only alphanumeric variable names are allowed in substitutions
+- Path traversal is restricted to the workspace directory
+
+## License
+
 This project is licensed under the GPLv3 License.
