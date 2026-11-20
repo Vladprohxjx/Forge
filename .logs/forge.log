@@ -1,0 +1,11 @@
+   Compiling forge v1.0.1 (C:\Forge)
+warning: unused variable: `e`
+   --> src\main.rs:308:13
+    |
+308 |         Err(e) if config_raw.is_empty() => ForgeConfig::default(),
+    |             ^ help: if this is intentional, prefix it with an underscore: `_e`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `forge` (bin "forge") generated 1 warning (run `cargo fix --bin "forge" -p forge` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 3.66s
