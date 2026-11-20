@@ -7,7 +7,7 @@ Forge extends the standard Rust build pipeline by automating post-build optimiza
 ## Key Features
 
 - **Workspace Orchestration:** Parallel execution of builds across multiple workspace members with configurable thread limits.
-- **Smart Caching:** SHA-256 based file tracking to skip redundant builds and save time.
+- **Build Cache:** SHA-256 fingerprints include project inputs, build profile, target and feature settings.
 - **Isolated Logging:** Per-project log files in `.logs/` directory to prevent terminal noise.
 - **Post-processing:** Integrated binary stripping for production-ready artifacts.
 - **Git Integration:** Automatic detection of uncommitted changes before build operations.
@@ -137,7 +137,7 @@ Forge supports pre-build and post-build hooks that execute custom commands:
 - **prebuild:** Commands executed before each project build
 - **afterbuild:** Commands executed after successful project build
 
-Hooks support variable substitution using `$VARIABLE` or `${VARIABLE}` syntax. Only alphanumeric variable names (with underscores) are allowed for security.
+Hooks use native shell environment expansion. Forge passes configured `[env]` values and `FORGE_PROJECT`, `FORGE_PROFILE`, and `FORGE_PATH` through the process environment rather than inserting values into shell command text.
 
 Example:
 
@@ -174,9 +174,10 @@ When `log = true` is enabled, full build output is saved to `.logs/<project>.log
 
 ## Security Considerations
 
-- Hook commands are validated to prevent injection attacks
-- Only alphanumeric variable names are allowed in substitutions
-- Path traversal is restricted to the workspace directory
+- Hook commands are trusted shell scripts from your configuration and run with Forge's permissions.
+- Variable values are passed through environment variables, not interpolated into shell source.
+- Never place untrusted input directly in hook command strings.
+- `forge clean` only removes project-root `target/` and `.logs/` directories and refuses symlinks.
 
 ## License
 

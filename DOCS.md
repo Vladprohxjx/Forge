@@ -188,6 +188,8 @@ Command Rules:
 
 · Commands execute sequentially
 · Non-zero exit codes abort the build
+· Non-zero build, hook, formatting, lint and test exit codes are reported as failures
+· Hook values are passed as environment variables rather than interpolated into shell source
 · Both stdout and stderr are captured when log = true
 
 Command Line Interface
@@ -299,13 +301,11 @@ commands = [
 
 Issue: Variables not expanding
 
-Solution: Use $VAR syntax (not ${VAR}):
+Solution: Both `$VAR` and `${VAR}` are supported by Unix shells; choose the form appropriate to your shell.
 
 ```toml
-# Correct
+# Both forms work with Unix shells
 commands = ["cp $BUILD_DIR/app ./"]
-
-# Incorrect
 commands = ["cp ${BUILD_DIR}/app ./"]
 ```
 
